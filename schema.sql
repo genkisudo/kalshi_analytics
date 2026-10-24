@@ -1,13 +1,16 @@
--- BigQuery DDL for chess ingestion (step 1).
--- Replace YOUR_PROJECT, then run this in the BigQuery console before `extract_chess.py --load`.
--- The loader uses a NEWLINE_DELIMITED_JSON load job (HTTP), WRITE_APPEND.
--- Fixed-point API values are JSON strings; the schema casts them to NUMERIC.
--- Each run appends a snapshot. A later dbt model should keep the latest row per ticker
--- and one row per trade_id.
+-- BigQuery medallion datasets: raw / staging / marts (layer-only naming).
+-- Project kalshi-analytics-512607 (number 9542648690).
+-- Run once:
+--   bq query --use_legacy_sql=false --project_id=kalshi-analytics-512607 < schema.sql
+-- Ingest (step 1) loads: raw.kalshi_chess_markets, raw.kalshi_chess_trades.
+-- dbt (step 2) owns tables in staging and marts.
+-- Legacy: dataset `kalshi` or raw.markets / raw.trades from early prototypes.
 
-CREATE SCHEMA IF NOT EXISTS `YOUR_PROJECT.kalshi` OPTIONS (location = 'US');
+CREATE SCHEMA IF NOT EXISTS `kalshi-analytics-512607.raw` OPTIONS (location = 'US');
+CREATE SCHEMA IF NOT EXISTS `kalshi-analytics-512607.staging` OPTIONS (location = 'US');
+CREATE SCHEMA IF NOT EXISTS `kalshi-analytics-512607.marts` OPTIONS (location = 'US');
 
-CREATE TABLE IF NOT EXISTS `YOUR_PROJECT.kalshi.markets` (
+CREATE TABLE IF NOT EXISTS `kalshi-analytics-512607.raw.kalshi_chess_markets` (
   ticker                    STRING NOT NULL,
   series_ticker             STRING,
   category                  STRING,
@@ -36,14 +39,14 @@ CREATE TABLE IF NOT EXISTS `YOUR_PROJECT.kalshi.markets` (
   open_interest_fp          NUMERIC,
   settlement_value_dollars  NUMERIC,
   floor_strike              FLOAT64,
-  custom_strike             STRING,   -- JSON object, e.g. {"Entity":"Hikaru Nakamura"}
-  _source                   STRING,   -- live | historical
+  custom_strike             STRING,
+  _source                   STRING,
   _ingested_at              TIMESTAMP NOT NULL
 )
 PARTITION BY DATE(created_time)
 CLUSTER BY series_ticker, event_ticker;
 
-CREATE TABLE IF NOT EXISTS `YOUR_PROJECT.kalshi.trades` (
+CREATE TABLE IF NOT EXISTS `kalshi-analytics-512607.raw.kalshi_chess_trades` (
   trade_id              STRING NOT NULL,
   ticker                STRING NOT NULL,
   series_ticker         STRING,
@@ -56,7 +59,7 @@ CREATE TABLE IF NOT EXISTS `YOUR_PROJECT.kalshi.trades` (
   taker_side            STRING,
   created_time          TIMESTAMP,
   is_block_trade        BOOL,
-  _source               STRING,   -- live | historical
+  _source               STRING,
   _ingested_at          TIMESTAMP NOT NULL
 )
 PARTITION BY DATE(created_time)

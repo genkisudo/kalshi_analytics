@@ -1,0 +1,11 @@
+.venv/
+data/
+.git/
+.cursor/
+*.md
+!README.md
+kalshi.py
+api_page_test.py
+plan.md
+AGENTS.md
+CLAUDE.md

@@ -1,14 +1,14 @@
-"""Step 1: Kalshi chess markets and public trades -> JSONL -> BigQuery load job.
+"""Kalshi chess markets and public trades -> JSONL -> BigQuery load job.
 
 Default run writes local JSONL only. Pass --load to append those files to BigQuery
 with a NEWLINE_DELIMITED_JSON load job (the HTTP batch load, not streaming inserts).
-Create the tables from schema.sql first. `--load` needs `google-cloud-bigquery`
+Create the tables from schema.sql first. ``--load`` needs ``google-cloud-bigquery``
 and Application Default Credentials. This script does not call GCP unless --load is set.
 
 Window: markets whose created_time is inside the last --days (default 7). Public
 trades are then read for those markets over the same window. Settled markets older
-than /historical/cutoff `market_settled_ts` are read from /historical/markets, and
-trades older than `trades_created_ts` from /historical/trades. A 7-day window that
+than /historical/cutoff ``market_settled_ts`` are read from /historical/markets, and
+trades older than ``trades_created_ts`` from /historical/trades. A 7-day window that
 starts after the cutoff uses the live endpoints only.
 
 Series: Sports series tagged Chess, plus Sports series whose title contains "chess"
@@ -25,7 +25,9 @@ import requests
 
 BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
 OUT_DIR = Path("data")
-DATASET = "kalshi"
+DATASET = "raw"
+TABLE_MARKETS = "kalshi_chess_markets"
+TABLE_TRADES = "kalshi_chess_trades"
 PAGE_LIMIT = 1000
 DEFAULT_DAYS = 7
 
@@ -44,7 +46,19 @@ TRADE_FIELDS = [
 
 
 def get(path, **params):
-    """GET one Kalshi path. Retries 429. Raises on any other HTTP error."""
+    """Perform one GET request against the Kalshi trade API.
+
+    Args:
+        path: Path suffix appended to ``BASE_URL`` (e.g. ``/markets``).
+        **params: Query parameters; keys with value ``None`` are omitted.
+
+    Returns:
+        Parsed JSON response body as a dict.
+
+    Raises:
+        requests.HTTPError: On non-429 HTTP errors after ``raise_for_status``.
+        requests.HTTPError: On 429 if all retry attempts are exhausted.
+    """
     clean = {key: value for key, value in params.items() if value is not None}
     response = None
     for attempt in range(5):
@@ -58,7 +72,19 @@ def get(path, **params):
 
 
 def paginate(path, record_key, **params):
-    """Yield every record, following cursor until it is empty. See api_pagination.md."""
+    """Yield all records from a cursor-paginated Kalshi endpoint.
+
+    See api_pagination.md: filters stay constant across pages; stop when the cursor
+    is empty or repeats.
+
+    Args:
+        path: API path (e.g. ``/markets``).
+        record_key: Key in each response page holding the record list (e.g. ``markets``).
+        **params: Query filters; ``limit`` is set to ``PAGE_LIMIT``.
+
+    Yields:
+        Individual records from successive pages.
+    """
     params = dict(params, limit=PAGE_LIMIT)
     seen_cursors = set()
     cursor = None
@@ -72,6 +98,14 @@ def paginate(path, record_key, **params):
 
 
 def parse_ts(value):
+    """Parse an ISO-8601 timestamp string into a timezone-aware datetime.
+
+    Args:
+        value: Timestamp string, or empty/None.
+
+    Returns:
+        Parsed datetime, or None if ``value`` is falsy.
+    """
     if not value:
         return None
     if value.endswith("Z"):
@@ -80,17 +114,42 @@ def parse_ts(value):
 
 
 def to_unix(value):
+    """Convert a datetime or ISO string to Unix seconds (integer).
+
+    Args:
+        value: ``datetime`` instance or ISO-8601 string.
+
+    Returns:
+        Integer Unix timestamp.
+    """
     parsed = parse_ts(value) if isinstance(value, str) else value
     return int(parsed.timestamp())
 
 
 def in_window(iso_time, start, end):
+    """Return whether ``iso_time`` lies strictly between ``start`` and ``end``.
+
+    Args:
+        iso_time: Market or trade time as an ISO string.
+        start: Window start (aware datetime).
+        end: Window end (aware datetime).
+
+    Returns:
+        True if ``start < parsed < end``; False if unparseable or outside.
+    """
     parsed = parse_ts(iso_time)
     return parsed is not None and start < parsed < end
 
 
 def list_chess_series():
-    """Return {ticker: series} for Chess-tagged series and untagged chess titles."""
+    """Discover Kalshi series tickers that represent chess markets.
+
+    Includes Sports series with the Chess tag and untagged Sports series whose
+    title contains "chess" (case-insensitive).
+
+    Returns:
+        Dict mapping series ticker to the series object from the API.
+    """
     selected = {}
     for series in get("/series", category="Sports", tags="Chess").get("series", []):
         selected[series["ticker"]] = series
@@ -103,6 +162,15 @@ def list_chess_series():
 
 
 def has_volume(market):
+    """Return whether the market has strictly positive ``volume_fp``.
+
+    Args:
+        market: Market dict from the Kalshi API.
+
+    Returns:
+        False if volume is missing or zero; True if positive. Unparseable values
+        are treated as having volume so trades are not skipped silently.
+    """
     raw = market.get("volume_fp")
     if raw in (None, ""):
         return False
@@ -113,6 +181,12 @@ def has_volume(market):
 
 
 def cutoff_unix():
+    """Fetch live vs historical storage boundaries from Kalshi.
+
+    Returns:
+        Dict with keys ``markets`` and ``trades``, each an int Unix timestamp
+        from ``market_settled_ts`` and ``trades_created_ts`` respectively.
+    """
     payload = get("/historical/cutoff")
     return {
         "markets": to_unix(payload["market_settled_ts"]),
@@ -121,7 +195,22 @@ def cutoff_unix():
 
 
 def extract_markets(series_ticker, start, end, cutoffs):
-    """Live markets created in the window, plus archived ones when the window reaches back."""
+    """Collect markets for one series whose created_time falls in the window.
+
+    Uses live ``/markets`` with created-time filters. When the window extends
+    before the market archival cutoff, also scans ``/historical/markets`` and
+    filters by ``created_time`` client-side.
+
+    Args:
+        series_ticker: Kalshi series ticker.
+        start: Window start (aware datetime).
+        end: Window end (aware datetime).
+        cutoffs: Dict from ``cutoff_unix()`` with ``markets`` and ``trades`` keys.
+
+    Returns:
+        Dict mapping market ticker to ``(source, market)`` where source is
+        ``live`` or ``historical``.
+    """
     markets = {}
     for market in paginate(
         "/markets",
@@ -135,7 +224,6 @@ def extract_markets(series_ticker, start, end, cutoffs):
             markets[ticker] = ("live", market)
 
     if to_unix(start) < cutoffs["markets"]:
-        # /historical/markets has no created-time filter. Page the series and keep the window.
         for market in paginate("/historical/markets", "markets", series_ticker=series_ticker):
             ticker = market.get("ticker")
             if ticker and ticker not in markets and in_window(market.get("created_time"), start, end):
@@ -144,10 +232,19 @@ def extract_markets(series_ticker, start, end, cutoffs):
 
 
 def iter_trades(market_ticker, start_unix, end_unix, cutoffs):
-    """Route a trade window across live and historical storage. Dedupe is done by the caller.
+    """Yield public trades for one market, routing across live and historical APIs.
 
-    Trades filled before `trades_created_ts` are only on /historical/trades. The two
-    requests overlap by one second at the cutoff so a fill on that instant is not dropped.
+    Overlaps live and historical requests by one second at ``trades_created_ts``
+    so a fill on the cutoff instant is not dropped. Caller dedupes by ``trade_id``.
+
+    Args:
+        market_ticker: Market ticker.
+        start_unix: Trade window start (Unix seconds).
+        end_unix: Trade window end (Unix seconds).
+        cutoffs: Dict from ``cutoff_unix()``.
+
+    Yields:
+        Tuples of ``(source, trade)`` where source is ``live`` or ``historical``.
     """
     trade_cutoff = cutoffs["trades"]
     ranges = []
@@ -171,6 +268,18 @@ def iter_trades(market_ticker, start_unix, end_unix, cutoffs):
 
 
 def transform_market(market, series_ticker, category, source, ingested_at):
+    """Build one BigQuery-ready market row from an API market object.
+
+    Args:
+        market: Raw market dict from Kalshi.
+        series_ticker: Parent series ticker.
+        category: Series category (e.g. Sports).
+        source: ``live`` or ``historical``.
+        ingested_at: ISO timestamp for this extract run.
+
+    Returns:
+        Flat dict aligned with ``MARKET_FIELDS`` plus metadata columns.
+    """
     row = {field: market.get(field) for field in MARKET_FIELDS}
     strike = market.get("custom_strike")
     row["custom_strike"] = json.dumps(strike, separators=(",", ":")) if strike else None
@@ -182,6 +291,18 @@ def transform_market(market, series_ticker, category, source, ingested_at):
 
 
 def transform_trade(trade, series_ticker, event_ticker, source, ingested_at):
+    """Build one BigQuery-ready trade row from an API trade object.
+
+    Args:
+        trade: Raw trade dict from Kalshi.
+        series_ticker: Parent series ticker.
+        event_ticker: Parent event ticker from the market.
+        source: ``live`` or ``historical``.
+        ingested_at: ISO timestamp for this extract run.
+
+    Returns:
+        Flat dict aligned with ``TRADE_FIELDS`` plus metadata columns.
+    """
     row = {field: trade.get(field) for field in TRADE_FIELDS}
     row["series_ticker"] = series_ticker
     row["event_ticker"] = event_ticker
@@ -191,6 +312,12 @@ def transform_trade(trade, series_ticker, event_ticker, source, ingested_at):
 
 
 def write_jsonl(rows, path):
+    """Write rows as newline-delimited JSON to ``path``.
+
+    Args:
+        rows: Iterable of JSON-serializable dicts.
+        path: Output file path; parent directory is created if needed.
+    """
     path.parent.mkdir(exist_ok=True)
     with path.open("w") as handle:
         for row in rows:
@@ -198,6 +325,14 @@ def write_jsonl(rows, path):
 
 
 def _schema(columns):
+    """Build a list of BigQuery ``SchemaField`` instances from column tuples.
+
+    Args:
+        columns: Sequence of ``(name, field_type, mode)`` tuples.
+
+    Returns:
+        List of ``google.cloud.bigquery.SchemaField`` objects.
+    """
     from google.cloud import bigquery
 
     fields = []
@@ -207,6 +342,11 @@ def _schema(columns):
 
 
 def market_schema():
+    """Return the BigQuery schema for the markets load job.
+
+    Returns:
+        Schema field list matching ``schema.sql`` / market JSONL rows.
+    """
     numeric = [
         "last_price_dollars", "yes_bid_dollars", "yes_ask_dollars", "no_bid_dollars",
         "no_ask_dollars", "volume_fp", "volume_24h_fp", "open_interest_fp",
@@ -230,6 +370,11 @@ def market_schema():
 
 
 def trade_schema():
+    """Return the BigQuery schema for the trades load job.
+
+    Returns:
+        Schema field list matching ``schema.sql`` / trade JSONL rows.
+    """
     columns = [
         ("trade_id", "STRING", "REQUIRED"),
         ("ticker", "STRING", "REQUIRED"),
@@ -250,7 +395,17 @@ def trade_schema():
 
 
 def load_jsonl(path, table_id, schema, project):
-    """Append one JSONL file with a BigQuery load job. Table must already exist (schema.sql)."""
+    """Append one JSONL file to an existing BigQuery table via a load job.
+
+    Args:
+        path: Local newline-delimited JSON file.
+        table_id: Fully qualified table id ``project.dataset.table``.
+        schema: BigQuery schema field list.
+        project: GCP project id for the BigQuery client.
+
+    Raises:
+        google.cloud.exceptions.GoogleCloudError: If the load job fails.
+    """
     from google.cloud import bigquery
 
     job_config = bigquery.LoadJobConfig(
@@ -267,16 +422,35 @@ def load_jsonl(path, table_id, schema, project):
 
 
 def load_to_bigquery(market_path, trade_path, project):
-    if project == "YOUR_PROJECT":
+    """Load market and trade JSONL files produced by ``extract``.
+
+    Args:
+        market_path: Path to markets JSONL.
+        trade_path: Path to trades JSONL; skipped if the file is empty.
+        project: GCP project id.
+
+    Raises:
+        SystemExit: If ``project`` is empty.
+    """
+    if not project:
         raise SystemExit("Pass --project with your GCP project id before --load.")
-    load_jsonl(market_path, f"{project}.{DATASET}.markets", market_schema(), project)
+    load_jsonl(market_path, f"{project}.{DATASET}.{TABLE_MARKETS}", market_schema(), project)
     if trade_path.stat().st_size == 0:
-        print(f"no trades to load into {project}.{DATASET}.trades")
+        print(f"no trades to load into {project}.{DATASET}.{TABLE_TRADES}")
         return
-    load_jsonl(trade_path, f"{project}.{DATASET}.trades", trade_schema(), project)
+    load_jsonl(trade_path, f"{project}.{DATASET}.{TABLE_TRADES}", trade_schema(), project)
 
 
 def extract(days):
+    """Run the full Kalshi chess extract for the last ``days`` calendar days.
+
+    Args:
+        days: Lookback length; markets are filtered by ``created_time`` in
+            ``(now - days, now)``. Trades use the same Unix window per market.
+
+    Returns:
+        Tuple ``(market_path, trade_path)`` of written JSONL files under ``OUT_DIR``.
+    """
     now = datetime.now(timezone.utc)
     start = now - timedelta(days=days)
     ingested_at = now.isoformat()
@@ -331,10 +505,15 @@ def extract(days):
 
 
 def main():
+    """Parse CLI arguments, run extract, and optionally load to BigQuery."""
     parser = argparse.ArgumentParser(description="Extract Kalshi chess markets and public trades.")
     parser.add_argument("--days", type=int, default=DEFAULT_DAYS, help="Created-time lookback. Default 7.")
     parser.add_argument("--load", action="store_true", help="Append the JSONL files to BigQuery.")
-    parser.add_argument("--project", default="YOUR_PROJECT", help="GCP project id for --load.")
+    parser.add_argument(
+        "--project",
+        default="kalshi-analytics-512607",
+        help="GCP project id for --load.",
+    )
     args = parser.parse_args()
     if args.days < 1:
         raise SystemExit("--days must be >= 1")

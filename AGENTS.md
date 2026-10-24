@@ -2,30 +2,38 @@
 
 ## Project Structure & Module Organization
 
-This repository is a small, standalone Python sandbox for exploring the Kalshi public REST API. Python scripts live in the repository root: `kalshi.py` demonstrates series, event, and orderbook requests; `api_page_test.py` fetches one page of markets; and `extract_markets.py` selects series, paginates recent markets, and writes JSONL. `schema.sql` contains the planned BigQuery table definition. `api_pagination.md` and `api_history.md` document API behavior. Generated extracts belong in `data/`; do not commit credentials or unnecessary large data files.
+Kalshi chess ingestion: `extract_chess.py` pulls markets and trades (last `--days`, default 7) to JSONL under `data/`, then optionally appends to BigQuery project `kalshi-analytics-512607` (number `9542648690`), datasets **`raw`**, **`staging`**, **`marts`**; ingest tables `raw.kalshi_chess_markets`, `raw.kalshi_chess_trades`. See `bq_best_practices.md`.
+
+Step 1 (see [plan.md](plan.md)): raw DDL (`schema.sql`), Poetry ([pyproject.toml](pyproject.toml)), Docker ([Dockerfile](Dockerfile)), Cloud Run Job ([deploy/cloud_run_ingest.sh](deploy/cloud_run_ingest.sh)). dbt and Composer are later steps.
+
+`api_pagination.md` and `api_history.md` document cursors and historical cutoffs. `kalshi.py` and `api_page_test.py` are live smoke scripts. Do not commit credentials or large files in `data/`.
 
 ## Build, Test, and Development Commands
 
-There is no package build system, dependency manifest, or local server. Python 3 and `requests` are required. Run scripts directly from the repository root:
+Poetry is the preferred local environment:
 
-- `python3 kalshi.py` — query open KXHIGHNY markets and display event/orderbook data.
-- `python3 api_page_test.py` — make a live smoke request for up to 10 open markets.
-- `python3 extract_markets.py` — fetch recent markets for configured series and create a timestamped JSONL file in `data/`.
+- `poetry install` — install dependencies.
+- `poetry run python extract_chess.py` — write `data/chess_markets_*.jsonl` and `data/chess_trades_*.jsonl`. No GCP calls.
+- `bq query --use_legacy_sql=false --project_id=kalshi-analytics-512607 < schema.sql` — create `raw` dataset and tables once.
+- `poetry run python extract_chess.py --load` — append JSONL to `raw.kalshi_chess_*`.
+- `docker build -t chess-ingest:local .` — build ingest image.
+- `./deploy/cloud_run_ingest.sh` — push image and create/update Cloud Run Job `chess-ingest`.
+- `gcloud run jobs execute chess-ingest --region=us-central1 --wait` — run ingest in GCP.
 
-These commands make live API calls; they need network access and can fail when the API is unavailable.
+Live API calls need network access.
 
 ## Coding Style & Naming Conventions
 
-Use Python 3, four spaces for indentation, descriptive `snake_case` functions and variables, and uppercase names for module-level constants. Keep scripts readable and focused. API calls should use the shared base URL pattern, set a request timeout, and call `raise_for_status()` before decoding responses. Preserve fixed-point API values as strings unless a downstream schema explicitly requires conversion.
+Python 3, four-space indent, `snake_case`, uppercase module constants. Set a timeout and call `raise_for_status()` on every request. Retry HTTP 429 in `extract_chess.py`; do not treat other errors as empty pages. Keep fixed-point API values as strings in JSONL. BigQuery casts them to `NUMERIC` via `schema.sql`. Follow cursor pagination in `api_pagination.md`. Route old markets and trades with `GET /historical/cutoff` per `api_history.md`.
 
 ## Testing Guidelines
 
-There is no pytest suite or configured coverage target. `api_page_test.py` is a live smoke script, not an isolated unit test; it prints results and asserts the requested page is within its limit. When changing pagination or historical lookups, consult `api_pagination.md` and `api_history.md` and manually verify against the relevant endpoint.
+No pytest suite. `api_page_test.py` is a live smoke script. After pagination or historical changes, run a short `--days` smoke before `--load`. Loads use `WRITE_APPEND` and `CREATE_NEVER`.
 
 ## Commit & Pull Request Guidelines
 
-Git metadata is not present in this checkout, so repository-specific commit conventions cannot be verified. Use a short imperative commit subject (for example, `Add historical market pagination`). Pull requests should explain the API behavior changed, list manual checks performed, and include representative output or sample data when it helps reviewers.
+Short imperative subject, e.g. `Add raw dataset and Cloud Run ingest job`. PRs should note API behavior, manual checks, and sample JSONL when useful.
 
 ## Security & Configuration Tips
 
-The API examples use public endpoints and currently require no credentials. Keep tokens and personal configuration out of source control. Before running `extract_markets.py`, review its category/tag filters and remember that it creates data files under `data/`.
+Public Kalshi endpoints need no API key. Local `--load` uses Application Default Credentials. Cloud Run uses the job service account (BigQuery Data Editor + Job User). Keep tokens out of git. Each `--load` appends a snapshot; ticker and trade id are not unique in `raw`.

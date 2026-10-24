@@ -1,28 +1,34 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for agents working in this repository.
 
 ## Overview
 
-Small, unstructured sandbox for exploring the Kalshi public REST API with plain `requests`. There is no package, build system, linter, or test framework (no `requirements.txt` either — only `requests` is needed). Each `.py` file is a standalone script run directly:
+Chess ingestion calls the Kalshi public REST API with `requests`. Dependencies are managed with **Poetry** (`pyproject.toml`). Production ingest runs as a **Cloud Run Job** (Docker image runs `extract_chess.py --load`).
 
+```bash
+poetry install
+poetry run python extract_chess.py          # last 7 days -> data/chess_*.jsonl
+poetry run python extract_chess.py --load   # append to raw.kalshi_chess_markets / raw.kalshi_chess_trades
 ```
-python3 kalshi.py          # series -> open markets -> event details -> orderbook for KXHIGHNY
-python3 api_page_test.py   # fetches one page of 10 open markets (limit=10) and prints them
-```
 
-The "tests" are live-API smoke scripts, not pytest tests; there is no single-test command.
+GCP project `kalshi-analytics-512607` (number `9542648690`). Medallion datasets **`raw`**, **`staging`**, **`marts`**. Ingest: `raw.kalshi_chess_*`. See `bq_best_practices.md`. DDL: `schema.sql`. Create tables before the first `--load`. Local `--load` needs `google-cloud-bigquery` and ADC; Cloud Run uses the job service account.
 
-## Reference docs (local copies of Kalshi docs)
+Roadmap: [plan.md](plan.md) — step 1 is raw + Poetry + Docker + Cloud Run; dbt and Composer later.
 
-- `api_pagination.md` — cursor pagination (`cursor`/`limit`, loop until cursor is empty, keep filters constant across pages).
-- `api_history.md` — live vs. historical storage tiers. Old markets, trades, orders and fills move behind per-type cutoffs from `GET /historical/cutoff`, and must then be fetched from `/historical/*` endpoints. Cutoffs differ per data type; events and series are unaffected.
+`kalshi.py` and `api_page_test.py` are live smoke scripts.
 
-Consult these before writing code that pages through or looks back at old data.
+## Reference docs
 
-## API conventions to keep consistent
+- `api_pagination.md` — cursor pagination. Keep filters constant. Loop until `cursor` is empty.
+- `api_history.md` — live vs historical tiers. Cutoffs from `GET /historical/cutoff`.
+- `deploy/README.md` — Cloud Run Job deploy and execute.
 
-- Base URL: `https://external-api.kalshi.com/trade-api/v2` (used throughout the scripts and docs; Kalshi's documented host `api.elections.kalshi.com` also works).
-- Responses use fixed-point string fields: `yes_bid_dollars`, `volume_fp`, and orderbook under `orderbook_fp.yes_dollars` / `no_dollars` as `[price, count]` pairs. An orderbook side can be empty.
-- `/markets` ordering is not documented as guaranteed; the unfiltered feed is dominated by `KXMVECROSSCATEGORY-*` multi-leg combo markets with very long titles. Filter by `series_ticker` (e.g. `KXHIGHNY`) for ordinary markets.
-- Scripts use `raise_for_status()` plus a timeout on every request; keep that rather than treating failed requests as empty results.
+## API conventions
+
+- Base URL: `https://external-api.kalshi.com/trade-api/v2`.
+- Fixed-point fields stay strings in JSONL; BigQuery loads cast to `NUMERIC`.
+- Chess series: Sports + tag `Chess`, plus Sports series whose title contains `chess`.
+- Market window: `created_time` over `--days` (default 7). Trades split across live/historical at `trades_created_ts`.
+- Timeout and `raise_for_status()` on every request. Retry 429 only.
+- Loads: `NEWLINE_DELIMITED_JSON`, `WRITE_APPEND`, `CREATE_NEVER`.

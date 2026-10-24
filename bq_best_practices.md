@@ -20,11 +20,12 @@ General query-performance notes below, mapped to how we use BigQuery here.
 | **Order last** | In heavy ad hoc SQL, apply `ORDER BY` only in the final SELECT (or omit for exports). |
 | **Optimize join patterns** | When joining trades to markets, **markets first by row count** after filters, or use a pre-aggregated staging table as the large side per Google’s guidance. |
 
-## Ingest-specific (step 1)
+## Ingest-specific (step 1 — operational)
 
 - **Clustering**: `raw.kalshi_chess_markets` clusters on `series_ticker`, `event_ticker`; trades on `ticker`—align filters with cluster keys when possible.
-- **Append-only raw**: Each run adds rows; dedupe belongs in **staging** (`QUALIFY ROW_NUMBER() …`) not in the loader.
-- **Location**: All datasets use `US` (see `schema.sql`)—keep Cloud Run job region compatible (e.g. `us-central1`).
+- **Append-only raw**: Each run (local `--load` or Cloud Run Job `chess-ingest`) adds rows; dedupe belongs in **staging** (`QUALIFY ROW_NUMBER() …`) not in the loader.
+- **Location**: All datasets use `US` (see `schema.sql`)—Cloud Run job in `us-central1` is compatible.
+- **Weekly job + 7-day window**: scheduled runs overlap; expect duplicate `trade_id` / `ticker` in `raw` until dbt staging runs.
 
 ## References
 

@@ -1,5 +1,6 @@
-
 # Kalshi API — Pagination Guide
+
+Reference for [extract_chess.py](extract_chess.py): `paginate()` keeps filters fixed, follows `cursor` until empty, uses `limit=1000` (`PAGE_LIMIT`).
 
 Source: https://docs.kalshi.com/getting_started/pagination
 

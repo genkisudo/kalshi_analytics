@@ -4,31 +4,31 @@ Guidance for agents working in this repository.
 
 ## Overview
 
-Chess ingestion calls the Kalshi public REST API with `requests`. Dependencies are managed with **Poetry** (`pyproject.toml`). Production ingest runs as a **Cloud Run Job** (Docker image runs `extract_chess.py --load`).
+Chess ingestion calls the Kalshi public REST API with `requests`. Dependencies: **Poetry** (`pyproject.toml`, `package-mode = false`). Production: **Cloud Run Job** `chess-ingest` in `us-central1` runs `extract_chess.py --load` from a **linux/amd64** Docker image ([deploy/cloud_run_ingest.sh](deploy/cloud_run_ingest.sh)).
 
 ```bash
 poetry install
 poetry run python extract_chess.py          # last 7 days -> data/chess_*.jsonl
-poetry run python extract_chess.py --load   # append to raw.kalshi_chess_markets / raw.kalshi_chess_trades
+poetry run python extract_chess.py --load   # append to raw.kalshi_chess_*
 ```
 
-GCP project `kalshi-analytics-512607` (number `9542648690`). Medallion datasets **`raw`**, **`staging`**, **`marts`**. Ingest: `raw.kalshi_chess_*`. See `bq_best_practices.md`. DDL: `schema.sql`. Create tables before the first `--load`. Local `--load` needs `google-cloud-bigquery` and ADC; Cloud Run uses the job service account.
+GCP project `kalshi-analytics-512607` (number `9542648690`). Datasets **`raw`**, **`staging`**, **`marts`**. Ingest: `raw.kalshi_chess_markets`, `raw.kalshi_chess_trades`. DDL: [schema.sql](schema.sql). [bq_best_practices.md](bq_best_practices.md). [plan.md](plan.md) — step 1 complete; dbt/Composer later.
 
-Roadmap: [plan.md](plan.md) — step 1 is raw + Poetry + Docker + Cloud Run; dbt and Composer later.
+Local `--load`: `google-cloud-bigquery` + ADC. Cloud Run: service account `chess-ingest@kalshi-analytics-512607.iam.gserviceaccount.com`.
 
-`kalshi.py` and `api_page_test.py` are live smoke scripts.
+Smoke scripts: `kalshi.py`, `api_page_test.py`.
 
 ## Reference docs
 
-- `api_pagination.md` — cursor pagination. Keep filters constant. Loop until `cursor` is empty.
-- `api_history.md` — live vs historical tiers. Cutoffs from `GET /historical/cutoff`.
-- `deploy/README.md` — Cloud Run Job deploy and execute.
+- [api_pagination.md](api_pagination.md) — cursors; `extract_chess.py` uses `PAGE_LIMIT=1000`.
+- [api_history.md](api_history.md) — `/historical/cutoff` and dual endpoints.
+- [deploy/README.md](deploy/README.md) — deploy, execute, Scheduler, IAM, amd64, troubleshooting.
 
 ## API conventions
 
 - Base URL: `https://external-api.kalshi.com/trade-api/v2`.
-- Fixed-point fields stay strings in JSONL; BigQuery loads cast to `NUMERIC`.
-- Chess series: Sports + tag `Chess`, plus Sports series whose title contains `chess`.
-- Market window: `created_time` over `--days` (default 7). Trades split across live/historical at `trades_created_ts`.
-- Timeout and `raise_for_status()` on every request. Retry 429 only.
+- Fixed-point fields as strings in JSONL; BQ `NUMERIC` on load.
+- Chess series: Sports + tag `Chess`, plus title contains `chess`.
+- Window: market `created_time` over `--days` (default 7); trades same window; live/historical split at `trades_created_ts`.
+- Timeout, `raise_for_status()`, retry 429 only.
 - Loads: `NEWLINE_DELIMITED_JSON`, `WRITE_APPEND`, `CREATE_NEVER`.

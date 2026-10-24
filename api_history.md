@@ -1,5 +1,6 @@
-
 # Kalshi API — Historical Data Guide
+
+Reference for [extract_chess.py](extract_chess.py): `cutoff_unix()`, `/historical/markets`, `/historical/trades`, and one-second overlap at `trades_created_ts`.
 
 Source: https://docs.kalshi.com/getting_started/historical_data
 

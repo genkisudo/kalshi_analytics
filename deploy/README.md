@@ -1,67 +1,57 @@
 # Cloud Run Job — chess ingest
 
-Container runs `extract_chess.py --load` (Kalshi API → JSONL → append `raw.kalshi_chess_markets` / `raw.kalshi_chess_trades`).
+Container runs `extract_chess.py --load` (Kalshi API → JSONL in `/app/data` → append **`raw.kalshi_chess_markets`** / **`raw.kalshi_chess_trades`**).
 
-## Remove legacy BigQuery data (optional)
+Job name: **`chess-ingest`**. Region: **`us-central1`**. Image: **`us-central1-docker.pkg.dev/kalshi-analytics-512607/kalshi/chess-ingest:latest`**.
 
-Prototype loads may exist in dataset `kalshi` or old `raw.markets` / `raw.trades`. **Deleting a dataset removes all tables inside it.**
+## One-time BigQuery
 
-List what you have:
-
-```bash
-bq ls --project_id=kalshi-analytics-512607
-bq ls kalshi-analytics-512607:kalshi
-bq ls kalshi-analytics-512607:raw
-```
-
-Drop entire legacy dataset (irreversible):
-
-```bash
-bq rm -r -f -d kalshi-analytics-512607:kalshi
-```
-
-Drop only old raw tables (keep `raw.kalshi_chess_*`):
-
-```bash
-bq rm -f -t kalshi-analytics-512607:raw.markets
-bq rm -f -t kalshi-analytics-512607:raw.trades
-```
-
-Use the [BigQuery console](https://console.cloud.google.com/bigquery?project=kalshi-analytics-512607) if you prefer UI: select dataset/table → Delete.
-
-## One-time BigQuery raw layer
+Creates datasets `raw`, `staging`, `marts` and raw chess tables:
 
 ```bash
 bq query --use_legacy_sql=false --project_id=kalshi-analytics-512607 < schema.sql
+bq ls kalshi-analytics-512607:raw
 ```
 
 ## Deploy or update the job
 
-From the repo root (Docker running locally). On Apple Silicon, the deploy script builds **`linux/amd64`** for Cloud Run.
-
+From repo root. **Docker Desktop must be running.**
 
 ```bash
 chmod +x deploy/cloud_run_ingest.sh
 ./deploy/cloud_run_ingest.sh
 ```
 
-Defaults: project `kalshi-analytics-512607`, region `us-central1`, job name `chess-ingest`. Override with env vars, e.g. `REGION=us-east1 ./deploy/cloud_run_ingest.sh`.
+The script:
 
-## What `cloud_run_ingest.sh` does
+1. Enables Run, Artifact Registry, BigQuery APIs.
+2. **`docker build --platform linux/amd64`** and **`docker push`** (required on Apple Silicon — arm-only images fail on Cloud Run with an amd64 manifest error).
+3. Ensures service account **`chess-ingest@kalshi-analytics-512607.iam.gserviceaccount.com`** exists; waits for propagation; grants **BigQuery Data Editor** and **Job User** (idempotent).
+4. Creates or updates Cloud Run Job **`chess-ingest`**.
 
-1. Enables APIs, ensures an Artifact Registry repo exists, **`docker build`** + **`docker push`** of your ingest image.
-2. Creates **`chess-ingest`** service account (first run) with BigQuery load permissions.
-3. **Creates or updates** the Cloud Run Job `chess-ingest` to run that image (`extract_chess.py --load`). It does **not** run the job or set a schedule.
+It does **not** execute the job or configure a schedule.
 
-## Execute manually (no schedule)
+Override defaults: `REGION=us-east1 ./deploy/cloud_run_ingest.sh`.
+
+## Execute manually
 
 ```bash
 gcloud run jobs execute chess-ingest --region=us-central1 --wait
 ```
 
-## Weekly schedule (Cloud Scheduler)
+Logs: [Cloud Run → Jobs → chess-ingest → Executions](https://console.cloud.google.com/run/jobs?project=kalshi-analytics-512607).
 
-The job has **no built-in cron**; use Scheduler to call the Run Jobs API weekly (UTC Monday 06:00 example):
+Verify BigQuery:
+
+```bash
+bq query --use_legacy_sql=false '
+SELECT COUNT(*) FROM `kalshi-analytics-512607.raw.kalshi_chess_markets`;
+'
+```
+
+## Weekly schedule (optional)
+
+No built-in cron. Example: Monday 06:00 UTC via Cloud Scheduler — see commands below. Re-run `./deploy/cloud_run_ingest.sh` only when **code or Dockerfile** changes.
 
 ```bash
 gcloud services enable cloudscheduler.googleapis.com
@@ -79,29 +69,49 @@ gcloud scheduler jobs create http chess-ingest-weekly \
   --oauth-service-account-email="chess-ingest@kalshi-analytics-512607.iam.gserviceaccount.com"
 ```
 
-Re-deploy the image with `./deploy/cloud_run_ingest.sh` only when Python/Docker code changes—not on every scheduled run.
+## IAM troubleshooting
 
-Logs: Cloud Console → Cloud Run → Jobs → chess-ingest → Executions.
+**Roles needed on the job service account (project level):**
 
-## IAM
+- `roles/bigquery.dataEditor`
+- `roles/bigquery.jobUser`
 
-The script creates service account `chess-ingest@…` with BigQuery Data Editor and Job User. The job identity is used automatically inside the container (no `application-default login` in Cloud Run).
+Check:
 
-If deploy fails right after **Created service account** with `Service account … does not exist`, wait ~1 minute and re-run `./deploy/cloud_run_ingest.sh` (image is already pushed), or grant roles manually:
+```bash
+gcloud projects get-iam-policy kalshi-analytics-512607 \
+  --flatten="bindings[].members" \
+  --filter="bindings.members:chess-ingest@kalshi-analytics-512607.iam.gserviceaccount.com" \
+  --format="table(bindings.role)"
+```
+
+**Console:** [IAM](https://console.cloud.google.com/iam-admin/iam?project=kalshi-analytics-512607) → filter `chess-ingest` → **Edit principal** (pencil) → add missing roles. If **Grant access** says *principal already exists*, edit the existing row instead.
+
+**CLI `Service account does not exist` right after create:** wait ~1 minute; re-run `./deploy/cloud_run_ingest.sh` (image may already be pushed).
+
+**Cloud Run `must support amd64/linux`:** rebuild with `--platform linux/amd64` (the deploy script does this).
+
+## Remove legacy BigQuery data (optional)
+
+Early loads may be in dataset **`kalshi`** or **`raw.markets`** / **`raw.trades`**.
+
+```bash
+bq rm -r -f -d kalshi-analytics-512607:kalshi
+bq rm -f -t kalshi-analytics-512607:raw.markets
+bq rm -f -t kalshi-analytics-512607:raw.trades
+```
+
+## Manual job create (if deploy stopped before job create)
 
 ```bash
 PROJECT_ID=kalshi-analytics-512607
 SA=chess-ingest@${PROJECT_ID}.iam.gserviceaccount.com
-
-gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
-  --member="serviceAccount:${SA}" --role="roles/bigquery.dataEditor"
-gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
-  --member="serviceAccount:${SA}" --role="roles/bigquery.jobUser"
+IMAGE=us-central1-docker.pkg.dev/${PROJECT_ID}/kalshi/chess-ingest:latest
 
 gcloud run jobs create chess-ingest --region=us-central1 \
-  --image=us-central1-docker.pkg.dev/${PROJECT_ID}/kalshi/chess-ingest:latest \
-  --service-account="${SA}" --task-timeout=3600 --max-retries=1 \
+  --image="${IMAGE}" --service-account="${SA}" \
+  --task-timeout=3600 --max-retries=1 \
   --set-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID}"
 ```
 
-Use `gcloud run jobs update` instead of `create` if the job already exists.
+Use `gcloud run jobs update` if the job already exists.

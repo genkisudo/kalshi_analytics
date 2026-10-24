@@ -3,7 +3,8 @@ name = "kalshi-chess-ingest"
 version = "0.1.0"
 description = "Kalshi chess markets and trades extract to BigQuery raw layer"
 readme = "README.md"
-packages = []
+authors = ["Kalshi Analytics <kamil.usmanov.es@gmail.com>"]
+package-mode = false
 
 [tool.poetry.dependencies]
 python = "^3.11"

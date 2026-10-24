@@ -48,7 +48,7 @@ Poetry creates a local virtualenv (often `.venv/`); that folder is gitignored an
 ### 1c. Docker (local test)
 
 ```bash
-docker build -t chess-ingest:local .
+docker build --platform linux/amd64 -t chess-ingest:local .
 docker run --rm \
   -e GOOGLE_APPLICATION_CREDENTIALS=/tmp/adc.json \
   -v "$HOME/.config/gcloud/application_default_credentials.json:/tmp/adc.json:ro" \

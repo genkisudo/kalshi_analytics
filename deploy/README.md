@@ -37,7 +37,8 @@ bq query --use_legacy_sql=false --project_id=kalshi-analytics-512607 < schema.sq
 
 ## Deploy or update the job
 
-From the repo root (Docker running locally):
+From the repo root (Docker running locally). On Apple Silicon, the deploy script builds **`linux/amd64`** for Cloud Run.
+
 
 ```bash
 chmod +x deploy/cloud_run_ingest.sh
@@ -85,3 +86,22 @@ Logs: Cloud Console → Cloud Run → Jobs → chess-ingest → Executions.
 ## IAM
 
 The script creates service account `chess-ingest@…` with BigQuery Data Editor and Job User. The job identity is used automatically inside the container (no `application-default login` in Cloud Run).
+
+If deploy fails right after **Created service account** with `Service account … does not exist`, wait ~1 minute and re-run `./deploy/cloud_run_ingest.sh` (image is already pushed), or grant roles manually:
+
+```bash
+PROJECT_ID=kalshi-analytics-512607
+SA=chess-ingest@${PROJECT_ID}.iam.gserviceaccount.com
+
+gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+  --member="serviceAccount:${SA}" --role="roles/bigquery.dataEditor"
+gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+  --member="serviceAccount:${SA}" --role="roles/bigquery.jobUser"
+
+gcloud run jobs create chess-ingest --region=us-central1 \
+  --image=us-central1-docker.pkg.dev/${PROJECT_ID}/kalshi/chess-ingest:latest \
+  --service-account="${SA}" --task-timeout=3600 --max-retries=1 \
+  --set-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID}"
+```
+
+Use `gcloud run jobs update` instead of `create` if the job already exists.

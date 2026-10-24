@@ -8,7 +8,8 @@ REGION="${REGION:-us-central1}"
 REPOSITORY="${REPOSITORY:-kalshi}"
 IMAGE_NAME="${IMAGE_NAME:-chess-ingest}"
 JOB_NAME="${JOB_NAME:-chess-ingest}"
-RUN_SA="${RUN_SA:-chess-ingest@${PROJECT_ID}.iam.gserviceaccount.com}"
+SA_ID="${SA_ID:-chess-ingest}"
+RUN_SA="${RUN_SA:-${SA_ID}@${PROJECT_ID}.iam.gserviceaccount.com}"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${IMAGE_NAME}:latest"
@@ -26,22 +27,36 @@ fi
 
 gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
 
-docker build -t "${IMAGE}" "${ROOT}"
+# Cloud Run requires linux/amd64 (Mac ARM builds arm64 by default).
+docker build --platform linux/amd64 -t "${IMAGE}" "${ROOT}"
 docker push "${IMAGE}"
 
 if ! gcloud iam service-accounts describe "${RUN_SA}" &>/dev/null; then
-  gcloud iam service-accounts create chess-ingest \
+  gcloud iam service-accounts create "${SA_ID}" \
     --display-name="Chess ingest Cloud Run Job"
-  RUN_SA="chess-ingest@${PROJECT_ID}.iam.gserviceaccount.com"
-  gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
-    --member="serviceAccount:${RUN_SA}" \
-    --role="roles/bigquery.dataEditor" \
-    --quiet
-  gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
-    --member="serviceAccount:${RUN_SA}" \
-    --role="roles/bigquery.jobUser" \
-    --quiet
 fi
+
+echo "Waiting for service account ${RUN_SA} to be visible..."
+for _ in $(seq 1 24); do
+  if gcloud iam service-accounts describe "${RUN_SA}" &>/dev/null; then
+    break
+  fi
+  sleep 5
+done
+if ! gcloud iam service-accounts describe "${RUN_SA}" &>/dev/null; then
+  echo "Service account ${RUN_SA} not found after wait. Retry in a minute or grant IAM in Console."
+  exit 1
+fi
+
+# Idempotent; safe on every deploy (skipped if binding already exists).
+gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+  --member="serviceAccount:${RUN_SA}" \
+  --role="roles/bigquery.dataEditor" \
+  --quiet
+gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+  --member="serviceAccount:${RUN_SA}" \
+  --role="roles/bigquery.jobUser" \
+  --quiet
 
 if gcloud run jobs describe "${JOB_NAME}" --region="${REGION}" &>/dev/null; then
   gcloud run jobs update "${JOB_NAME}" \

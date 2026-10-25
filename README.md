@@ -4,13 +4,19 @@ This repository pulls **chess-related prediction markets and public trades** fro
 
 **Status:** Step 1 is **done** (ingest to BigQuery `raw`). **dbt** models and **Airflow on Composer** are planned next. See [plan.md](plan.md).
 
+**Who is this for?**
+
+- **[Browse the code](#code-tour)** — map of [extract_chess.py](extract_chess.py) and where to read next.
+- **[Run locally (no GCP)](#quick-start)** — `poetry install` then `poetry run python extract_chess.py` (JSONL only).
+- **[Load BigQuery / production](#quick-start)** — BigQuery DDL, `--load`, and [deploy/README.md](deploy/README.md) for Cloud Run.
+
 ## Architecture overview
 
 Solid boxes are **live today**. Dashed boxes and arrows are **planned** (step 2+).
 
 <p align="center">
   <img
-    src="kalshi-market-data-pipeline.png"
+    src="docs/kalshi-market-data-pipeline.png"
     alt="Architecture: Kalshi API to extract_chess.py (local or Cloud Run Job) to JSONL and raw BigQuery; Scheduler, staging, and marts are planned"
     width="50%"
   />
@@ -38,6 +44,34 @@ Solid boxes are **live today**. Dashed boxes and arrows are **planned** (step 2+
 - `raw.kalshi_chess_trades`
 
 `raw` is intentionally **not deduplicated**. Weekly runs with a 7-day window will append overlapping rows; dedupe belongs in `staging` later.
+
+---
+
+## Code tour
+
+Almost all ingest logic lives in a single module, [extract_chess.py](extract_chess.py). Read it in this order:
+
+| Stage | Functions (starting points) | Read next |
+| --- | --- | --- |
+| HTTP + pagination | `get`, `paginate` | [api_pagination.md](api_pagination.md) |
+| Chess scope | `list_chess_series` | Module docstring (series filter rules) |
+| Live vs historical | `cutoff_unix`, `extract_markets`, `iter_trades` | [api_history.md](api_history.md) |
+| Shaping + lineage | `transform_market`, `transform_trade` (`_source`, `_ingested_at`) | [schema.sql](schema.sql) |
+| Orchestration | `extract` → `main` | [CLI & smoke checks](#cli--smoke-checks) |
+| BigQuery load | `load_jsonl`, `load_to_bigquery` | `WRITE_APPEND` / `CREATE_NEVER` in code |
+
+In-script control flow (GCP topology is in the diagram above):
+
+```mermaid
+flowchart LR
+  API[Kalshi API]
+  Extract[extract]
+  JSONL[data/chess_*.jsonl]
+  BQ[raw.kalshi_chess_*]
+  API --> Extract
+  Extract --> JSONL
+  JSONL -->|optional --load| BQ
+```
 
 ---
 
@@ -79,6 +113,26 @@ gcloud run jobs execute chess-ingest --region=us-central1 --wait
 ```
 
 After a load, verify row counts in the BigQuery console or with `bq query` on `raw.kalshi_chess_markets`.
+
+---
+
+## CLI & smoke checks
+
+| Flag | Default | Purpose |
+| --- | --- | --- |
+| `--days` | `7` | Market `created_time` lookback |
+| `--load` | off | Append JSONL to `raw.kalshi_chess_*` |
+| `--project` | `kalshi-analytics-512607` | BQ project when `--load` |
+
+After you change API or pagination logic, run a narrow extract before `--load`:
+
+```bash
+poetry run python kalshi.py                    # quick API reachability
+poetry run python api_page_test.py             # pagination smoke
+poetry run python extract_chess.py --days 1    # narrow window before --load
+```
+
+Coding style, testing expectations, and commit notes: [AGENTS.md](AGENTS.md).
 
 ---
 

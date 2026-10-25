@@ -73,23 +73,6 @@ flowchart TB
 
 ## How it works (high level)
 
-```mermaid
-sequenceDiagram
-    participant K as Kalshi API
-    participant X as extract_chess.py
-    participant J as JSONL data/
-    participant B as BigQuery raw
-
-    X->>K: GET /historical/cutoff
-    X->>K: List chess series & markets (--days window)
-    X->>K: Paginate trades per market
-    Note over X,K: Older rows use /historical/* endpoints
-    X->>J: Write chess_*.jsonl
-    opt flag --load
-        X->>B: Append NEWLINE_DELIMITED_JSON
-    end
-```
-
 1. **Discover** chess series and markets (default: markets whose `created_time` is in the last **7 days**; override with `--days`).
 2. **Fetch trades** for those markets over the same time window.
 3. **Route live vs historical** using Kalshi’s `/historical/cutoff` (older settled markets and trades use historical endpoints). Details: [api_history.md](api_history.md).
@@ -100,76 +83,32 @@ Retries: HTTP **429** only (exponential backoff). Other errors fail fast after `
 
 ---
 
-## Prerequisites
+## Quick start
 
-**Local extract (JSONL only)**
+Needs [Poetry](https://python-poetry.org/docs/#installation) (Python 3.11+). For `--load` or Cloud Run: [Google Cloud SDK](https://cloud.google.com/sdk), ADC (`gcloud auth application-default login`), and `gcloud config set project kalshi-analytics-512607`.
 
-- [Poetry](https://python-poetry.org/docs/#installation)
-- Python **3.11+**
-- Network access to `external-api.kalshi.com`
-
-**Local extract + BigQuery load (`--load`)**
-
-- [Google Cloud SDK](https://cloud.google.com/sdk) (`gcloud`, `bq`)
-- Application Default Credentials, e.g. `gcloud auth application-default login`
-- Project set: `gcloud config set project kalshi-analytics-512607`
-- BigQuery tables created once from [schema.sql](schema.sql) (see below)
-
-**Deploy / run on GCP**
-
-- Docker Desktop (for building **linux/amd64** images on Apple Silicon)
-- Permission to push to Artifact Registry and update Cloud Run in `kalshi-analytics-512607`
-
----
-
-## Quick start — local
-
-```bash
-poetry install
-
-# Last 7 days → data/chess_*.jsonl (no GCP calls)
-poetry run python extract_chess.py
-
-# Shorter window while testing
-poetry run python extract_chess.py --days 1
-
-# Same extract, then append to BigQuery raw tables
-poetry run python extract_chess.py --load
-```
-
-Output files live under **`data/`** (gitignored). Fixed-point API amounts stay **strings** in JSONL; BigQuery loads them as `NUMERIC` per [schema.sql](schema.sql).
-
----
-
-## Quick start — BigQuery (one-time DDL)
-
-Creates datasets `raw`, `staging`, `marts` and the two chess raw tables:
+**1. BigQuery (once)** — datasets `raw` / `staging` / `marts` and `raw.kalshi_chess_*` tables:
 
 ```bash
 bq query --use_legacy_sql=false --project_id=kalshi-analytics-512607 < schema.sql
 ```
 
-Check row counts after a load:
+**2. Extract locally** — last **7 days** (default) to gitignored `data/chess_*.jsonl`; use `--days N` to narrow. `--load` appends JSONL to `raw` (fixed-point fields stay strings in files, `NUMERIC` in BQ per [schema.sql](schema.sql)):
 
 ```bash
-bq query --use_legacy_sql=false \
-  'SELECT COUNT(*) FROM `kalshi-analytics-512607.raw.kalshi_chess_markets`'
+poetry install
+poetry run python extract_chess.py           # API only, no GCP
+poetry run python extract_chess.py --load    # extract + append to raw
 ```
 
-Query tips (partitioning, clustering, append-only behavior): [bq_best_practices.md](bq_best_practices.md).
-
----
-
-## Quick start — production (Cloud Run)
-
-Full deploy steps, IAM, optional weekly **Cloud Scheduler**, and troubleshooting: **[deploy/README.md](deploy/README.md)**.
+**3. Production** — same script with `--load` on Cloud Run Job `chess-ingest` (`chess-ingest@kalshi-analytics-512607.iam.gserviceaccount.com`). Deploy, IAM, Scheduler, amd64 build: [deploy/README.md](deploy/README.md).
 
 ```bash
 ./deploy/cloud_run_ingest.sh
 gcloud run jobs execute chess-ingest --region=us-central1 --wait
 ```
 
-The job runs `extract_chess.py --load` inside the container. Service account: `chess-ingest@kalshi-analytics-512607.iam.gserviceaccount.com`.
+After a load, verify row counts in the BigQuery console or with `bq query` on `raw.kalshi_chess_markets`. Query tips: [bq_best_practices.md](bq_best_practices.md).
 
 ---
 
@@ -218,3 +157,4 @@ Full target stack (Composer, second dbt job): [plan.md](plan.md).
 - Do **not** commit `data/` or credential files.
 - Kalshi: no API key in this project.
 - GCP: local `--load` uses your user ADC; production uses the dedicated ingest service account.
+

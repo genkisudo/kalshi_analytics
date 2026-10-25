@@ -27,42 +27,8 @@ DAG: ingest job → dbt job (can replace Scheduler from step 1).
 
 ## Target architecture (full stack)
 
-```mermaid
-graph TD
-    classDef default fill:#fff,stroke:#333,stroke-width:1px;
-    classDef api fill:#f3f4f6,stroke:#4b5563,stroke-width:1px;
-    classDef airflow fill:#dbeafe,stroke:#3b82f6,stroke-width:1px;
-    classDef compute fill:#d1fae5,stroke:#10b981,stroke-width:1px;
-    classDef registry fill:#fef3c7,stroke:#f59e0b,stroke-width:1px;
-    classDef bq fill:#f3e8ff,stroke:#8b5cf6,stroke-width:1px;
-    classDef noteBox fill:#fee2e2,stroke:#ef4444,stroke-width:1px;
+![Kalshi Market Data Pipeline (pet project)](docs/kalshi-market-data-pipeline.png)
 
-    API["<b>Kalshi REST API</b><br/>Market data endpoints<br/>(markets, events, trades)<br/>HTTPS / JSON"]:::api
+**Legend:** solid lines — data flow; dashed blue — orchestration (`CloudRunExecuteJobOperator`); dashed yellow — container image pull from Artifact Registry.
 
-    Airflow["<b>Airflow on Cloud Composer (managed)</b><br/>Orchestration: schedule, order, retries, dependencies<br/>DAG: ingest -> dbt run -> dbt test"]:::airflow
-
-    IngestJob["<b>Cloud Run Job</b><br/>chess-ingest<br/>(Poetry, Docker)"]:::compute
-    DbtJob["<b>Cloud Run Job</b><br/>dbt core CLI (Poetry, Docker)<br/>Compiles SQL only, moves no data"]:::compute
-
-    Registry["<b>Artifact Registry</b><br/>kalshi/chess-ingest"]:::registry
-
-    subgraph BigQuery ["BigQuery (executes the SQL, does the processing)"]
-        Raw["raw.kalshi_chess_*"]:::bq
-        Staging["staging<br/>(dbt)"]:::bq
-        Marts["marts<br/>(dbt)"]:::bq
-    end
-
-    Note["<b>Self-hosted on managed services</b><br/><b>You own:</b> dbt project, Docker image, DAGs, deployment<br/><b>Google owns:</b> servers under Cloud Run, Composer, BigQuery"]:::noteBox
-
-    API --> IngestJob
-    IngestJob -->|load| Raw
-    Raw --> Staging
-    Staging --> Marts
-    DbtJob -->|compiled SQL pushed down| BigQuery
-
-    Airflow -.->|CloudRunExecuteJobOperator (ingest)| IngestJob
-    Airflow -.->|CloudRunExecuteJobOperator (dbt), after ingest succeeds| DbtJob
-
-    Registry -.->|image| DbtJob
-    Registry -.->|image| IngestJob
-```
+**Today (step 1):** ingest Cloud Run Job → `raw.kalshi_chess_*`. Composer, dbt job, and `staging` / `marts` models are step 2+.

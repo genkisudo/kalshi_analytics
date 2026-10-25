@@ -8,34 +8,13 @@ This repository pulls **chess-related prediction markets and public trades** fro
 
 Solid boxes are **live today**. Dashed boxes and arrows are **planned** (step 2+).
 
-```mermaid
-flowchart TB
-    API["Kalshi public REST API<br/>markets and trades · no API key"]
-
-    subgraph run ["How ingest runs"]
-        LOCAL["Local: poetry run extract_chess.py"]
-        JOB["GCP: Cloud Run Job chess-ingest<br/>us-central1"]
-        SCRIPT["extract_chess.py<br/>Poetry · Docker image"]
-        FILES["JSONL files<br/>data/ locally · /app/data in job"]
-    end
-
-    subgraph bq ["BigQuery · project kalshi-analytics-512607"]
-        RAW["raw<br/>kalshi_chess_markets<br/>kalshi_chess_trades<br/>append-only · partitioned"]
-        STAGING["staging<br/>dedupe and clean · dbt"]
-        MARTS["marts<br/>analytics models · dbt"]
-    end
-
-    SCHED["Cloud Scheduler<br/>optional weekly trigger"]
-
-    API --> SCRIPT
-    LOCAL --> SCRIPT
-    JOB --> SCRIPT
-    SCRIPT --> FILES
-    SCRIPT -->|"--load · batch load job"| RAW
-    SCHED -.->|"POST run job"| JOB
-    RAW -.->|"step 2"| STAGING
-    STAGING -.->|"step 2"| MARTS
-```
+<p align="center">
+  <img
+    src="docs/readme-architecture.png"
+    alt="Architecture: Kalshi API to extract_chess.py (local or Cloud Run Job) to JSONL and raw BigQuery; Scheduler, staging, and marts are planned"
+    width="50%"
+  />
+</p>
 
 | Layer | Role |
 | --- | --- |
@@ -149,12 +128,3 @@ Full target stack (Composer, second dbt job): [plan.md](plan.md).
 | [api_pagination.md](api_pagination.md) | Cursor pagination conventions |
 | [api_history.md](api_history.md) | Live vs historical endpoints |
 | [AGENTS.md](AGENTS.md) | Contributor / agent conventions for this repo |
-
----
-
-## Security notes
-
-- Do **not** commit `data/` or credential files.
-- Kalshi: no API key in this project.
-- GCP: local `--load` uses your user ADC; production uses the dedicated ingest service account.
-

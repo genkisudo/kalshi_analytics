@@ -87,7 +87,7 @@ poetry run python extract_chess.py --load    # extract + append to raw
 gcloud run jobs execute chess-ingest --region=us-central1 --wait
 ```
 
-After a load, verify row counts in the BigQuery console or with `bq query` on `raw.kalshi_chess_markets`. Query tips: [bq_best_practices.md](bq_best_practices.md).
+After a load, verify row counts in the BigQuery console or with `bq query` on `raw.kalshi_chess_markets`.
 
 ---
 
@@ -124,7 +124,6 @@ Full target stack (Composer, second dbt job): [plan.md](plan.md).
 | --- | --- |
 | [plan.md](plan.md) | Roadmap and target architecture |
 | [deploy/README.md](deploy/README.md) | Cloud Run, Artifact Registry, Scheduler, IAM |
-| [bq_best_practices.md](bq_best_practices.md) | Medallion naming, partitions, dedupe strategy |
 | [api_pagination.md](api_pagination.md) | Cursor pagination conventions |
 | [api_history.md](api_history.md) | Live vs historical endpoints |
 | [AGENTS.md](AGENTS.md) | Contributor / agent conventions for this repo |

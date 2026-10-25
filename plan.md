@@ -17,7 +17,7 @@ Land Kalshi chess API data in BigQuery. Production path: **Cloud Run Job** `ches
 
 ## Step 2 — dbt (later)
 
-Models in **`staging`** (dedupe, types) and **`marts`** (analytics). Second Cloud Run Job image. See [bq_best_practices.md](bq_best_practices.md).
+Models in **`staging`** (dedupe, types) and **`marts`** (analytics). Second Cloud Run Job image. Table DDL: [schema.sql](schema.sql).
 
 ## Step 3 — Airflow on Composer (later)
 

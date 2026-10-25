@@ -12,7 +12,7 @@ poetry run python extract_chess.py          # last 7 days -> data/chess_*.jsonl
 poetry run python extract_chess.py --load   # append to raw.kalshi_chess_*
 ```
 
-GCP project `kalshi-analytics-512607` (number `9542648690`). Datasets **`raw`**, **`staging`**, **`marts`**. Ingest: `raw.kalshi_chess_markets`, `raw.kalshi_chess_trades`. DDL: [schema.sql](schema.sql). [bq_best_practices.md](bq_best_practices.md). [plan.md](plan.md) — step 1 complete; dbt/Composer later.
+GCP project `kalshi-analytics-512607` (number `9542648690`). Datasets **`raw`**, **`staging`**, **`marts`**. Ingest: `raw.kalshi_chess_markets`, `raw.kalshi_chess_trades`. DDL: [schema.sql](schema.sql). [plan.md](plan.md) — step 1 complete; dbt/Composer later.
 
 Local `--load`: `google-cloud-bigquery` + ADC. Cloud Run: service account `chess-ingest@kalshi-analytics-512607.iam.gserviceaccount.com`.
 

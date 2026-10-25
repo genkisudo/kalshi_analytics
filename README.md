@@ -10,7 +10,7 @@ Solid boxes are **live today**. Dashed boxes and arrows are **planned** (step 2+
 
 <p align="center">
   <img
-    src="docs/readme-architecture.png"
+    src="kalshi-market-data-pipeline.png"
     alt="Architecture: Kalshi API to extract_chess.py (local or Cloud Run Job) to JSONL and raw BigQuery; Scheduler, staging, and marts are planned"
     width="50%"
   />
@@ -25,15 +25,6 @@ Solid boxes are **live today**. Dashed boxes and arrows are **planned** (step 2+
 | **staging / marts** | Not built yet—see [plan.md](plan.md). |
 
 ---
-
-## What you get
-
-| Piece | Description |
-| --- | --- |
-| **Markets** | Chess markets (Sports series with Chess tag, plus titles containing “chess”) with prices, volume, status, settlement fields, etc. |
-| **Trades** | Public trade history for those markets (price, size, side, timestamps). |
-| **Storage** | Append-only tables in BigQuery dataset **`raw`**, with `_ingested_at` on each row for lineage. |
-| **Production** | Docker image on **Cloud Run Job** `chess-ingest` (`us-central1`), project **`kalshi-analytics-512607`**. |
 
 **Medallion layout (BigQuery datasets):**
 

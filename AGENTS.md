@@ -4,7 +4,7 @@
 
 Kalshi chess ingestion: `extract_chess.py` pulls markets and trades (last `--days`, default 7) to JSONL under `data/`, then optionally appends to BigQuery project `kalshi-analytics-512607` (number `9542648690`).
 
-**Medallion datasets:** `raw`, `staging`, `marts`. **Ingest tables:** `raw.kalshi_chess_markets`, `raw.kalshi_chess_trades`. See [bq_best_practices.md](bq_best_practices.md).
+**Medallion datasets:** `raw`, `staging`, `marts`. **Ingest tables:** `raw.kalshi_chess_markets`, `raw.kalshi_chess_trades`. DDL: [schema.sql](schema.sql).
 
 **Step 1 is complete:** Poetry, Docker, Cloud Run Job `chess-ingest` (`us-central1`). dbt and Composer are later — [plan.md](plan.md).
 

@@ -1,18 +1,81 @@
-# Kalshi chess analytics — data ingest
+# Kalshi Chess Analytics
 
-This repository pulls **chess-related prediction markets and public trades** from [Kalshi’s public REST API](https://kalshi.com) and lands them in **Google BigQuery** for analysis. No Kalshi API key is required—the endpoints used here are public.
+Pull **chess prediction markets and public trades** from [Kalshi's public API](https://kalshi.com) and load them into **Google BigQuery**. No Kalshi API key needed.
 
-**Status:** Step 1 is **done** (ingest to BigQuery `raw`). **dbt** models and **Airflow on Composer** are planned next. See [plan.md](plan.md).
+> **Status:** Step 1 (ingest to BigQuery `raw`) is done. Step 2 (**dbt**) is in progress: `staging` models dedupe markets and trades; `marts` are next. Composer orchestration comes after — see [plan.md](plan.md).
 
-**Who is this for?**
+**Jump to:** [Quick start](#quick-start) · [dbt](#transform-with-dbt) · [How it works](#how-it-works) · [Options](#command-line-options) · [Code tour](#code-tour) · [Roadmap](#roadmap) · [More docs](#more-docs)
 
-- **[Browse the code](#code-tour)** — map of [extract_chess.py](extract_chess.py) and where to read next.
-- **[Run locally (no GCP)](#quick-start)** — `poetry install` then `poetry run python extract_chess.py` (JSONL only).
-- **[Load BigQuery / production](#quick-start)** — BigQuery DDL, `--load`, and [deploy/README.md](deploy/README.md) for Cloud Run.
+---
 
-## Architecture overview
+## Quick start
 
-Solid boxes are **live today**. Dashed boxes and arrows are **planned** (step 2+).
+**You need:** [Poetry](https://python-poetry.org/docs/#installation) and Python 3.11+. Only for BigQuery loading or deploying: the [Google Cloud SDK](https://cloud.google.com/sdk).
+
+### Option A — Try it locally (no Google Cloud)
+
+```bash
+poetry install
+poetry run python extract_chess.py
+```
+
+This fetches the last 7 days of chess markets and trades and writes `data/chess_*.jsonl`.
+
+### Option B — Load into BigQuery
+
+```bash
+# 1. Sign in and pick the project
+gcloud auth application-default login
+gcloud config set project kalshi-analytics-512607
+
+# 2. Create datasets and tables (one time)
+bq query --use_legacy_sql=false --project_id=kalshi-analytics-512607 < schema.sql
+
+# 3. Extract and append to raw.kalshi_chess_*
+poetry run python extract_chess.py --load
+```
+
+Check the result:
+
+```sql
+SELECT COUNT(*) FROM `kalshi-analytics-512607.raw.kalshi_chess_markets`;
+```
+
+### Option C — Run in production (Cloud Run Job)
+
+```bash
+./deploy/cloud_run_ingest.sh
+gcloud run jobs execute chess-ingest --region=us-central1 --wait
+```
+
+Needs Docker running. Deploy details, IAM, Scheduler and troubleshooting: [deploy/README.md](deploy/README.md).
+
+---
+
+## Transform with dbt
+
+After `raw` has data, dbt builds clean tables in `staging`. It uses **dbt-core** (installed by `poetry install`) and the same gcloud login as Option B, so no extra credentials.
+
+```bash
+cd dbt
+poetry run dbt debug    # check the connection
+poetry run dbt build    # run models and tests
+```
+
+Always use `poetry run dbt`, not a bare `dbt`: another dbt (Fusion) may be on your `PATH`.
+
+| Model | Result |
+| --- | --- |
+| `stg_kalshi_chess_markets` | One row per market (`ticker`), newest snapshot wins |
+| `stg_kalshi_chess_trades` | One row per trade (`trade_id`), newest snapshot wins |
+
+Project layout and status: [dbt/README.md](dbt/README.md).
+
+---
+
+## Architecture
+
+Solid boxes are **live today**; dashed ones are **planned**. (The image predates dbt: `staging` is now built, `marts` is not.)
 
 <p align="center">
   <img
@@ -22,131 +85,89 @@ Solid boxes are **live today**. Dashed boxes and arrows are **planned** (step 2+
   />
 </p>
 
-| Layer | Role |
+| Layer | What it does |
 | --- | --- |
-| **Kalshi API** | Source of chess markets and public trades ([live vs historical](api_history.md) routing inside the script). |
-| **extract_chess.py** | Fetch, paginate, write JSONL; optionally append to BigQuery. |
-| **Cloud Run Job** | Same script with `--load` in production; image from Artifact Registry via [deploy/cloud_run_ingest.sh](deploy/cloud_run_ingest.sh). |
-| **raw** | Landing zone—API shape, `_ingested_at` lineage; overlaps OK until staging dedupes. |
-| **staging / marts** | Not built yet—see [plan.md](plan.md). |
+| **Kalshi API** | Source of chess markets and public trades |
+| **`extract_chess.py`** | Fetches, paginates, writes JSONL, optionally appends to BigQuery |
+| **Cloud Run Job** | Runs the same script with `--load` in production |
+| **`raw`** | Landing zone, API-shaped, with `_ingested_at` lineage |
+| **dbt (`dbt/`)** | Run by hand for now; builds `staging` from `raw` |
+| **`staging`** | Deduplicated views: `stg_kalshi_chess_markets`, `stg_kalshi_chess_trades` |
+| **`marts`** | Not built yet |
+
+### BigQuery datasets and tables
+
+| Dataset | Purpose | Status |
+| --- | --- | --- |
+| `raw` | API-shaped snapshots: `kalshi_chess_markets`, `kalshi_chess_trades` | Live |
+| `staging` | Deduplicated views built by dbt | Live |
+| `marts` | Analytics-ready models | Planned |
+
+> **Heads-up:** `raw` is **not deduplicated**. Runs with overlapping windows append overlapping rows; always query `staging` for clean data.
 
 ---
 
-**Medallion layout (BigQuery datasets):**
+## How it works
 
-- **`raw`** — API-shaped snapshots (this repo loads here).
-- **`staging`** — reserved for deduplicated, cleaned tables (future **dbt**).
-- **`marts`** — reserved for analytics-ready models (future **dbt**).
+1. **Discover** chess series and markets created in the last `--days` (default 7).
+2. **Fetch trades** for those markets over the same window.
+3. **Route live vs historical** using Kalshi's `/historical/cutoff` ([details](api_history.md)).
+4. **Paginate** every list endpoint, 1000 per page ([details](api_pagination.md)).
+5. **Write** newline-delimited JSON, or with `--load` append it to BigQuery via a batch load job.
 
-**Tables written by ingest:**
+Only HTTP **429** is retried (exponential backoff); other errors fail fast.
 
-- `raw.kalshi_chess_markets`
-- `raw.kalshi_chess_trades`
+```mermaid
+flowchart LR
+  API[Kalshi API] --> Extract[extract]
+  Extract --> JSONL[data/chess_*.jsonl]
+  JSONL -->|optional --load| BQ[raw.kalshi_chess_*]
+```
 
-`raw` is intentionally **not deduplicated**. Weekly runs with a 7-day window will append overlapping rows; dedupe belongs in `staging` later.
+---
+
+## Command-line options
+
+| Flag | Default | Purpose |
+| --- | --- | --- |
+| `--days N` | `7` | How far back to look at market `created_time` |
+| `--load` | off | Append the JSONL output to `raw.kalshi_chess_*` |
+| `--project ID` | `kalshi-analytics-512607` | BigQuery project used with `--load` |
+
+**Before loading after a code change**, run the smoke checks:
+
+```bash
+poetry run python kalshi.py                    # is the API reachable?
+poetry run python api_page_test.py             # does pagination work?
+poetry run python extract_chess.py --days 1    # small extract first
+```
 
 ---
 
 ## Code tour
 
-Almost all ingest logic lives in a single module, [extract_chess.py](extract_chess.py). Read it in this order:
+Nearly all logic is in [extract_chess.py](extract_chess.py). Suggested reading order:
 
-| Stage | Functions (starting points) | Read next |
+| Stage | Start with | Read next |
 | --- | --- | --- |
 | HTTP + pagination | `get`, `paginate` | [api_pagination.md](api_pagination.md) |
-| Chess scope | `list_chess_series` | Module docstring (series filter rules) |
+| Chess scope | `list_chess_series` | Module docstring |
 | Live vs historical | `cutoff_unix`, `extract_markets`, `iter_trades` | [api_history.md](api_history.md) |
-| Shaping + lineage | `transform_market`, `transform_trade` (`_source`, `_ingested_at`) | [schema.sql](schema.sql) |
-| Orchestration | `extract` → `main` | [CLI & smoke checks](#cli--smoke-checks) |
-| BigQuery load | `load_jsonl`, `load_to_bigquery` | `WRITE_APPEND` / `CREATE_NEVER` in code |
+| Shaping + lineage | `transform_market`, `transform_trade` | [schema.sql](schema.sql) |
+| Orchestration | `extract` → `main` | [Options](#command-line-options) |
+| BigQuery load | `load_jsonl`, `load_to_bigquery` | `WRITE_APPEND` / `CREATE_NEVER` |
 
-In-script control flow (GCP topology is in the diagram above):
-
-```mermaid
-flowchart LR
-  API[Kalshi API]
-  Extract[extract]
-  JSONL[data/chess_*.jsonl]
-  BQ[raw.kalshi_chess_*]
-  API --> Extract
-  Extract --> JSONL
-  JSONL -->|optional --load| BQ
-```
-
----
-
-## How it works (high level)
-
-1. **Discover** chess series and markets (default: markets whose `created_time` is in the last **7 days**; override with `--days`).
-2. **Fetch trades** for those markets over the same time window.
-3. **Route live vs historical** using Kalshi’s `/historical/cutoff` (older settled markets and trades use historical endpoints). Details: [api_history.md](api_history.md).
-4. **Paginate** all list endpoints (page size 1000). Details: [api_pagination.md](api_pagination.md).
-5. **Write** newline-delimited JSON locally, or **append** to BigQuery with a batch load job when you pass `--load`.
-
-Retries: HTTP **429** only (exponential backoff). Other errors fail fast after `raise_for_status()`.
-
----
-
-## Quick start
-
-Needs [Poetry](https://python-poetry.org/docs/#installation) (Python 3.11+). For `--load` or Cloud Run: [Google Cloud SDK](https://cloud.google.com/sdk), ADC (`gcloud auth application-default login`), and `gcloud config set project kalshi-analytics-512607`.
-
-**1. BigQuery (once)** — datasets `raw` / `staging` / `marts` and `raw.kalshi_chess_*` tables:
-
-```bash
-bq query --use_legacy_sql=false --project_id=kalshi-analytics-512607 < schema.sql
-```
-
-**2. Extract locally** — last **7 days** (default) to gitignored `data/chess_*.jsonl`; use `--days N` to narrow. `--load` appends JSONL to `raw` (fixed-point fields stay strings in files, `NUMERIC` in BQ per [schema.sql](schema.sql)):
-
-```bash
-poetry install
-poetry run python extract_chess.py           # API only, no GCP
-poetry run python extract_chess.py --load    # extract + append to raw
-```
-
-**3. Production** — same script with `--load` on Cloud Run Job `chess-ingest` (`chess-ingest@kalshi-analytics-512607.iam.gserviceaccount.com`). Deploy, IAM, Scheduler, amd64 build: [deploy/README.md](deploy/README.md).
-
-```bash
-./deploy/cloud_run_ingest.sh
-gcloud run jobs execute chess-ingest --region=us-central1 --wait
-```
-
-After a load, verify row counts in the BigQuery console or with `bq query` on `raw.kalshi_chess_markets`.
-
----
-
-## CLI & smoke checks
-
-| Flag | Default | Purpose |
-| --- | --- | --- |
-| `--days` | `7` | Market `created_time` lookback |
-| `--load` | off | Append JSONL to `raw.kalshi_chess_*` |
-| `--project` | `kalshi-analytics-512607` | BQ project when `--load` |
-
-After you change API or pagination logic, run a narrow extract before `--load`:
-
-```bash
-poetry run python kalshi.py                    # quick API reachability
-poetry run python api_page_test.py             # pagination smoke
-poetry run python extract_chess.py --days 1    # narrow window before --load
-```
-
-Coding style, testing expectations, and commit notes: [AGENTS.md](AGENTS.md).
-
----
-
-## Repository map
+### Repository map
 
 | Path | Role |
 | --- | --- |
-| [extract_chess.py](extract_chess.py) | Main ingest: API → JSONL → optional BQ load |
-| [schema.sql](schema.sql) | BigQuery datasets and `raw.kalshi_chess_*` DDL |
-| [pyproject.toml](pyproject.toml) / [poetry.lock](poetry.lock) | Dependencies (`requests`, `google-cloud-bigquery`) |
-| [Dockerfile](Dockerfile) | Image for Cloud Run Job |
-| [deploy/cloud_run_ingest.sh](deploy/cloud_run_ingest.sh) | Build amd64, push, create/update job |
-| [kalshi.py](kalshi.py) | Small smoke script against the API |
-| [api_page_test.py](api_page_test.py) | Pagination smoke script |
+| [extract_chess.py](extract_chess.py) | Main ingest: API → JSONL → optional BigQuery |
+| [schema.sql](schema.sql) | Datasets and `raw.kalshi_chess_*` DDL |
+| [dbt/](dbt/README.md) | dbt project: sources, `staging` models, tests |
+| [pyproject.toml](pyproject.toml), [poetry.lock](poetry.lock) | Dependencies (dbt in the `dev` group) |
+| [Dockerfile](Dockerfile) | Cloud Run Job image |
+| [deploy/](deploy/) | Build, push and create/update the job |
+| [kalshi.py](kalshi.py), [api_page_test.py](api_page_test.py) | Smoke scripts |
 | `data/` | Local JSONL output (not committed) |
 
 ---
@@ -155,20 +176,19 @@ Coding style, testing expectations, and commit notes: [AGENTS.md](AGENTS.md).
 
 | Step | Goal | Status |
 | --- | --- | --- |
-| **1** | Containerized ingest → `raw.kalshi_chess_*` | **Complete** |
-| **2** | dbt: `staging` + `marts` (dedupe, analytics SQL) | Planned |
-| **3** | Composer DAG: ingest → dbt | Planned |
-
-Full target stack (Composer, second dbt job): [plan.md](plan.md).
+| 1 | Containerized ingest → `raw.kalshi_chess_*` | ✅ Complete |
+| 2 | dbt: `staging` (dedupe) + `marts` (analytics SQL) | 🚧 In progress: staging done, marts next |
+| 3 | Composer DAG: ingest → dbt | Planned |
 
 ---
 
-## Further reading
+## More docs
 
 | Document | Contents |
 | --- | --- |
 | [plan.md](plan.md) | Roadmap and target architecture |
+| [dbt/README.md](dbt/README.md) | dbt project layout, commands, status |
 | [deploy/README.md](deploy/README.md) | Cloud Run, Artifact Registry, Scheduler, IAM |
-| [api_pagination.md](api_pagination.md) | Cursor pagination conventions |
+| [api_pagination.md](api_pagination.md) | Cursor pagination |
 | [api_history.md](api_history.md) | Live vs historical endpoints |
-| [AGENTS.md](AGENTS.md) | Contributor / agent conventions for this repo |
+| [AGENTS.md](AGENTS.md) | Contributor and agent conventions |

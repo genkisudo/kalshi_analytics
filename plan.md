@@ -15,9 +15,17 @@ Land Kalshi chess API data in BigQuery. Production path: **Cloud Run Job** `ches
 
 **Legacy:** early loads may exist in dataset `kalshi` or `raw.markets` / `raw.trades`; current ingest uses **`raw.kalshi_chess_*`** only.
 
-## Step 2 — dbt (later)
+## Step 2 — dbt (in progress)
 
-Models in **`staging`** (dedupe, types) and **`marts`** (analytics). Second Cloud Run Job image. Table DDL: [schema.sql](schema.sql).
+Models in **`staging`** (dedupe, types) and **`marts`** (analytics). Second Cloud Run Job image. Table DDL: [schema.sql](schema.sql). Project: [dbt/](dbt/README.md).
+
+| Substep | What | Status |
+| --- | --- | --- |
+| **2a. Setup** | dbt-core + dbt-bigquery via Poetry (dev group), project in `dbt/`, in-repo `profiles.yml` (ADC), `dbt debug` passes | Done |
+| **2b. Sources** | `raw.kalshi_chess_*` declared in `_sources.yml` | Done |
+| **2c. Staging** | `stg_kalshi_chess_markets`, `stg_kalshi_chess_trades` (dedupe on `ticker` / `trade_id`) | Done; **next: add `unique` / `not_null` tests on `trade_id`** |
+| **2d. Marts** | e.g. market summary, daily activity | Next |
+| **2e. dbt image + job** | Container and Cloud Run Job running `dbt build` after ingest | Planned |
 
 ## Step 3 — Airflow on Composer (later)
 

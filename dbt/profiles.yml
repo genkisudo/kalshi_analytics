@@ -1,0 +1,10 @@
+kalshi_dbt:
+  target: dev
+  outputs:
+    dev:
+      type: bigquery
+      method: oauth          # uses gcloud application-default credentials
+      project: kalshi-analytics-512607
+      dataset: staging       # default dataset dbt builds into
+      location: US           # must match where the datasets were created
+      threads: 4

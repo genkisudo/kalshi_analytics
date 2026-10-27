@@ -1,0 +1,19 @@
+version: 2
+
+sources:
+  - name: raw
+    database: kalshi-analytics-512607
+    schema: raw
+    tables:
+      - name: kalshi_chess_markets
+        config:
+          loaded_at_field: _ingested_at
+        columns:
+          - name: ticker
+            data_tests: [not_null]
+      - name: kalshi_chess_trades
+        config:
+          loaded_at_field: _ingested_at
+        columns:
+          - name: trade_id
+            data_tests: [not_null]

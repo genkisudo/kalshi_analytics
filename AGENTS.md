@@ -6,7 +6,7 @@ Kalshi chess ingestion: `extract_chess.py` pulls markets and trades (last `--day
 
 **Medallion datasets:** `raw`, `staging`, `marts`. **Ingest tables:** `raw.kalshi_chess_markets`, `raw.kalshi_chess_trades`. DDL: [schema.sql](schema.sql).
 
-**Step 1 is complete:** Poetry, Docker, Cloud Run Job `chess-ingest` (`us-central1`). dbt and Composer are later — [plan.md](plan.md).
+**Step 1 is complete:** Poetry, Docker, Cloud Run Job `chess-ingest` (`us-central1`). **Step 2 (dbt) is in progress:** project in [dbt/](dbt/README.md) with `staging` models for markets and trades; `marts` and Composer are later — [plan.md](plan.md).
 
 Reference: [api_pagination.md](api_pagination.md), [api_history.md](api_history.md). Smoke scripts: `kalshi.py`, `api_page_test.py`. Do not commit `data/` or credentials.
 
@@ -19,6 +19,8 @@ Reference: [api_pagination.md](api_pagination.md), [api_history.md](api_history.
 - `docker build --platform linux/amd64 -t chess-ingest:local .` — local image (match Cloud Run arch).
 - `./deploy/cloud_run_ingest.sh` — build amd64, push to Artifact Registry, update job.
 - `gcloud run jobs execute chess-ingest --region=us-central1 --wait` — production ingest.
+- `cd dbt && poetry run dbt debug` — check profile and BigQuery connection.
+- `cd dbt && poetry run dbt build` — run dbt models and tests (always via Poetry, not a bare `dbt`).
 
 Deploy and IAM: [deploy/README.md](deploy/README.md). Live API calls need network.
 
@@ -28,7 +30,7 @@ Python 3, four-space indent, `snake_case`, uppercase module constants. Timeout +
 
 ## Testing Guidelines
 
-No pytest. `api_page_test.py` is a live smoke script. After API changes, `poetry run python extract_chess.py --days 1` before `--load`. Loads: `WRITE_APPEND`, `CREATE_NEVER`.
+No pytest. dbt data tests (`unique`, `not_null`) live in `dbt/models/**/_models.yml`; run them with `poetry run dbt build`. `api_page_test.py` is a live smoke script. After API changes, `poetry run python extract_chess.py --days 1` before `--load`. Loads: `WRITE_APPEND`, `CREATE_NEVER`.
 
 ## Commit & Pull Request Guidelines
 
@@ -36,4 +38,4 @@ Short imperative subject. PRs: API behavior, manual check (local or Cloud Run ex
 
 ## Security & Configuration Tips
 
-No Kalshi API key. Local `--load` uses ADC. Cloud Run uses `chess-ingest@…` service account. No `.env` required. Append-only `raw`; dedupe in future dbt `staging`.
+No Kalshi API key. Local `--load` uses ADC. Cloud Run uses `chess-ingest@…` service account. No `.env` required. Append-only `raw`; dedupe in dbt `staging`. dbt uses ADC and `dbt/profiles.yml` (no secrets); do not commit `dbt/target/`, `dbt/logs/` or `dbt/.user.yml`.
